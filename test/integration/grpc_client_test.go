@@ -40,6 +40,12 @@ func TestGRPCClient(t *testing.T) {
 			method:         "SayHelloStream",
 			expectedOutput: "stream response",
 		},
+		{
+			name:           "unary_dial_context",
+			extraArgs:      []string{"-dial-context", "-name=ClientTest"},
+			method:         "SayHello",
+			expectedOutput: "Hello ClientTest",
+		},
 	}
 
 	for _, tc := range testCases {

@@ -117,10 +117,7 @@ func BeforeNewClient(ictx hook.HookContext, target string, opts ...grpc.DialOpti
 
 	logger.Debug("BeforeNewClient called", "target", target)
 
-	// Create and inject stats handler
-	handler := newClientStatsHandler()
-	newOpts := append([]grpc.DialOption{grpc.WithStatsHandler(handler)}, opts...)
-	ictx.SetParam(newClientOptionsParamIndex, newOpts)
+	ictx.SetParam(newClientOptionsParamIndex, withClientStatsHandler(opts))
 }
 
 // AfterNewClient hooks after grpc.NewClient
@@ -146,10 +143,7 @@ func BeforeDialContext(ictx hook.HookContext, ctx context.Context, target string
 
 	logger.Debug("BeforeDialContext called", "target", target)
 
-	// Create and inject stats handler
-	handler := newClientStatsHandler()
-	newOpts := append([]grpc.DialOption{grpc.WithStatsHandler(handler)}, opts...)
-	ictx.SetParam(dialOptionsParamIndex, newOpts)
+	ictx.SetParam(dialOptionsParamIndex, withClientStatsHandler(opts))
 }
 
 // AfterDialContext hooks after grpc.DialContext
@@ -171,6 +165,26 @@ type gRPCContext struct {
 	outMessages   int64
 	metricAttrs   []attribute.KeyValue
 	metricAttrSet attribute.Set
+}
+
+// clientHandlerInjected marks opts that already have our client stats handler.
+// grpc.DialContext calls NewClient, so both before-hooks can run on one dial.
+// A second WithStatsHandler would start a child span and then end only that
+// inner span, leaving the parent unended.
+type clientHandlerInjected struct {
+	grpc.EmptyDialOption
+}
+
+func withClientStatsHandler(opts []grpc.DialOption) []grpc.DialOption {
+	for _, opt := range opts {
+		if _, ok := opt.(clientHandlerInjected); ok {
+			return opts
+		}
+	}
+	return append([]grpc.DialOption{
+		clientHandlerInjected{},
+		grpc.WithStatsHandler(newClientStatsHandler()),
+	}, opts...)
 }
 
 type clientStatsHandler struct{}

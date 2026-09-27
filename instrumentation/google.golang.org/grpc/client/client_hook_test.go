@@ -351,6 +351,63 @@ func TestClientStatsHandler_TagRPC(t *testing.T) {
 	}
 }
 
+func TestWithClientStatsHandler_SkipsSecondInject(t *testing.T) {
+	t.Setenv("OTEL_GO_ENABLED_INSTRUMENTATIONS", "grpc")
+
+	target := "localhost:50051"
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+
+	ctx := t.Context()
+	dialIctx := hooktest.NewMockHookContext(ctx, target, opts)
+	BeforeDialContext(dialIctx, ctx, target, opts...)
+	afterDial, ok := dialIctx.GetParam(dialOptionsParamIndex).([]grpc.DialOption)
+	require.True(t, ok)
+	require.Greater(t, len(afterDial), len(opts), "DialContext hook must inject the stats handler")
+
+	// grpc.DialContext then calls NewClient with the same opts.
+	newIctx := hooktest.NewMockHookContext(target, afterDial)
+	BeforeNewClient(newIctx, target, afterDial...)
+	afterNew, ok := newIctx.GetParam(newClientOptionsParamIndex).([]grpc.DialOption)
+	require.True(t, ok)
+	assert.Equal(t, afterDial, afterNew, "NewClient hook must not inject a second stats handler")
+}
+
+func TestClientStatsHandler_TwoHandlersEndOnlyInnerSpan(t *testing.T) {
+	t.Setenv("OTEL_GO_ENABLED_INSTRUMENTATIONS", "grpc")
+	initInstrumentation()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exporter),
+	)
+	oldTP := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(oldTP)
+	})
+	tracer = tp.Tracer(instrumentationName, trace.WithInstrumentationVersion(runtime.ModuleVersion()))
+
+	outer := newClientStatsHandler()
+	inner := newClientStatsHandler()
+	info := &stats.RPCTagInfo{FullMethodName: "/grpc.testing.TestService/UnaryCall"}
+
+	ctx := outer.TagRPC(t.Context(), info)
+	ctx = inner.TagRPC(ctx, info)
+	end := &stats.End{
+		BeginTime: time.Now().Add(-50 * time.Millisecond),
+		EndTime:   time.Now(),
+	}
+	outer.HandleRPC(ctx, end)
+	inner.HandleRPC(ctx, end)
+
+	spans := exporter.GetSpans()
+	require.Len(t, spans, 1, "both handlers end the inner span; the outer span is not exported")
+	assert.Equal(t, "grpc.testing.TestService/UnaryCall", spans[0].Name)
+}
+
 func TestClientStatsHandler_Integration(t *testing.T) {
 	t.Setenv("OTEL_GO_ENABLED_INSTRUMENTATIONS", "grpc")
 
