@@ -49,27 +49,22 @@ func (ip *instrumentPhase) applyLitRule(ctx context.Context, r *rule.InstLitRule
 	// Walk matched in reverse. dst.Inspect visits a literal before the literals
 	// nested inside it, so the reverse order edits the innermost literal first
 	// and an enclosing literal always wraps a finished subtree.
-	wrapsLiteral := pointerTmpl != nil || valueTmpl != nil
 	for _, m := range slices.Backward(matched) {
+		if len(setters) == 0 {
+			break
+		}
 		lit, enclosing := m.lit, m.enclosing
-		setFields := len(setters) > 0
 		// Go rejects a literal that mixes keyed and positional elements, so a
 		// positional literal cannot take the keyed elements this rule produces.
 		// The skip also precedes the shadowing check: a literal the rule never
 		// injects code into cannot resolve a rewritten alias to a local.
-		if setFields && hasPositionalElements(lit) {
+		if hasPositionalElements(lit) {
 			ip.Warn("Skipping positional composite literal; set_fields requires keyed elements",
 				"rule", r.Name, "type", r.StructLiteral)
-			setFields = false
-		}
-		if !setFields && !wrapsLiteral {
 			continue
 		}
 		if shadowErr := checkAliasOverrideShadowingAt(aliasOverrides, enclosing, lit); shadowErr != nil {
 			return false, shadowErr
-		}
-		if !setFields {
-			continue
 		}
 		litModified, setErr := ip.setLitFields(lit, enclosing, setters, r, aliasOverrides)
 		if setErr != nil {
@@ -78,7 +73,7 @@ func (ip *instrumentPhase) applyLitRule(ctx context.Context, r *rule.InstLitRule
 		modified = modified || litModified
 	}
 
-	if wrapsLiteral {
+	if pointerTmpl != nil || valueTmpl != nil {
 		wrapped, wrapErr := wrapLiterals(root, matched, pointerTmpl, valueTmpl, aliasOverrides)
 		if wrapErr != nil {
 			return false, ex.Wrapf(wrapErr, "failed to wrap literal of %s", r.StructLiteral)
@@ -217,7 +212,13 @@ func wrapLiterals(
 		if !isMatched || tmpl == nil {
 			return true
 		}
-		wrapped, err := tmpl.compileExpression(expr, enclosing, nil, aliasOverrides)
+		// Only a literal this rule wraps gets the rule's code, so only its
+		// scope can shadow a rewritten alias.
+		if err := checkAliasOverrideShadowingAt(aliasOverrides, enclosing, lit); err != nil {
+			wrapErr = err
+			return false
+		}
+		wrapped, err := tmpl.compileExpression(expr, callSite{}, enclosing, nil, aliasOverrides)
 		if err != nil {
 			wrapErr = err
 			return false
